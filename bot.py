@@ -1,4 +1,93 @@
+import asyncio
+from datetime import datetime, timedelta
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import logging
+
+# Replace with your actual bot token
+BOT_TOKEN = "8199451491:AAEqrV3aj_6JbdYEf5Sbl8lVbso_T4JPN9I"
+
+# Enable logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Store alarms: {chat_id: [(time_str, job)]}
+alarms = {}
+# Store opted-in users: {chat_id: set(user_ids)}
+listeners = {}
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Welcome! Use /set HH:MM to set alarm, /stop HH:MM to stop, /listen to receive alarms, /mute to stop receiving.")
+
+async def set_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if len(context.args) != 1:
+        await update.message.reply_text("Usage: /set HH:MM")
+        return
+    time_str = context.args[0]
+    try:
+        target_time = datetime.strptime(time_str, "%H:%M").time()
+        now = datetime.now()
+        alarm_datetime = datetime.combine(now.date(), target_time)
+        if alarm_datetime < now:
+            alarm_datetime += timedelta(days=1)
+        delay = (alarm_datetime - now).total_seconds()
+
+        job = asyncio.create_task(schedule_alarm(context, chat_id, time_str, delay))
+        alarms.setdefault(chat_id, []).append((time_str, job))
+
+        await update.message.reply_text(f"Alarm set for {time_str}")
+    except ValueError:
+        await update.message.reply_text("Invalid time format. Use HH:MM")
+
+async def schedule_alarm(context: ContextTypes.DEFAULT_TYPE, chat_id, time_str, delay):
+    await asyncio.sleep(delay)
+    user_ids = listeners.get(chat_id, set())
+    for uid in user_ids:
+        try:
+            await context.bot.send_message(uid, f"⏰ Alarm for {time_str}!")
+        except Exception as e:
+            logger.warning(f"Failed to send to {uid}: {e}")
+
+async def stop_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if len(context.args) != 1:
+        await update.message.reply_text("Usage: /stop HH:MM")
+        return
+    time_str = context.args[0]
+    if chat_id in alarms:
+        for t, job in alarms[chat_id]:
+            if t == time_str:
+                job.cancel()
+        alarms[chat_id] = [pair for pair in alarms[chat_id] if pair[0] != time_str]
+        await update.message.reply_text(f"Alarm for {time_str} stopped.")
+    else:
+        await update.message.reply_text("No alarms found.")
+
+async def listen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    listeners.setdefault(chat_id, set()).add(user_id)
+    await update.message.reply_text("You will now receive alarms in this group.")
+
+async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    if chat_id in listeners:
+        listeners[chat_id].discard(user_id)
+    await update.message.reply_text("You will no longer receive alarms in this group.")
+
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("set", set_alarm))
+    app.add_handler(CommandHandler("stop", stop_alarm))
+    app.add_handler(CommandHandler("listen", listen))
+    app.add_handler(CommandHandler("mute", mute))
+
+    print("Bot running...")
+    app.run_polling()import logging
 import asyncio
 from datetime import datetime, timedelta
 import os
